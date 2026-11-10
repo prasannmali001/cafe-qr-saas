@@ -28,3 +28,4 @@ export const SubmitReviewSchema = z.object({
 export type RandomTagsQueryInput = z.infer<typeof RandomTagsQuerySchema>;
 export type EnhanceReviewInput = z.infer<typeof EnhanceReviewSchema>;
 export type SubmitReviewInput = z.infer<typeof SubmitReviewSchema>;
+
