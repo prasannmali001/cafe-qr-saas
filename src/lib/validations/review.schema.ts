@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const RandomTagsQuerySchema = z.object({
-  cafeId: z.string().uuid(),
+  cafeId: z.string().min(1, "cafeId is required").max(100),
   stars: z.coerce.number().int().min(1).max(5),
 });
 
