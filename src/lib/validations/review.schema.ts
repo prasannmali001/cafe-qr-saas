@@ -15,8 +15,8 @@ export const EnhanceReviewSchema = z.object({
 });
 
 export const SubmitReviewSchema = z.object({
-  sessionId: z.string().uuid(),
-  cafeId: z.string().uuid(),
+  sessionId: z.string().min(1).max(100),
+  cafeId: z.string().min(1, "cafeId is required").max(100),
   staffCode: z.string().max(40).optional(),
   starRating: z.number().int().min(1).max(5),
   selectedTags: z.array(z.string().max(60)),
