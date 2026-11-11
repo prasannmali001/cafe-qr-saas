@@ -52,6 +52,7 @@ export function CustomerReviewClient({
   const [contactInfo, setContactInfo] = useState<string>("");
   const [aiUsesLeft, setAiUsesLeft] = useState<number>(3);
   const [isEnhancing, setIsEnhancing] = useState<boolean>(false);
+  const [rateLimitNotice, setRateLimitNotice] = useState<string | null>(null);
   const [managerSubmitted, setManagerSubmitted] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
@@ -111,6 +112,7 @@ export function CustomerReviewClient({
     if (aiUsesLeft <= 0 || isEnhancing) return;
 
     setIsEnhancing(true);
+    setRateLimitNotice(null);
 
     try {
       const res = await fetch("/api/v1/ai/enhance", {
@@ -120,21 +122,47 @@ export function CustomerReviewClient({
           sessionId,
           cafeName: cafe.name,
           starRating: stars,
-          selectedTags: selectedTags.length > 0 ? selectedTags : ["Great service"],
+          selectedTags:
+            selectedTags.length > 0 ? selectedTags : ["Great service"],
           rawUserInput: reviewText,
           languageHint: "en",
         }),
       });
 
+      if (res.status === 429) {
+        const errorData = (await res.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        setAiUsesLeft(0);
+        setRateLimitNotice(
+          errorData.error || "Max 3 AI enhancements reached for this session."
+        );
+        return;
+      }
+
       if (res.ok) {
-        const data = (await res.json()) as { enhancedText?: string };
+        const data = (await res.json()) as {
+          enhancedText?: string;
+          remainingUses?: number;
+          source?: "cache" | "gemini";
+        };
+
         if (data.enhancedText) {
           setReviewText(data.enhancedText);
-          setAiUsesLeft((prev) => Math.max(0, prev - 1));
-          return;
         }
+
+        if (typeof data.remainingUses === "number") {
+          setAiUsesLeft(data.remainingUses);
+          if (data.remainingUses === 0) {
+            setRateLimitNotice("All 3 AI enhancements used. Review is ready!");
+          }
+        } else {
+          setAiUsesLeft((prev) => Math.max(0, prev - 1));
+        }
+        return;
       }
-      throw new Error("Endpoint returned non-200 or not yet implemented");
+
+      throw new Error(`Endpoint returned status ${res.status}`);
     } catch {
       // Graceful local enhancement fallback (Section 3.2 State 4)
       const tagsPhrase =
@@ -145,7 +173,7 @@ export function CustomerReviewClient({
       let fallbackEnhanced = "";
       if (stars >= 4) {
         fallbackEnhanced = reviewText.trim()
-          ? `${reviewText.trim()} Loved the ${tagsPhrase} in particular. Great place to visit in Pune!`
+          ? `${reviewText.trim()} Loved the ${tagsPhrase} in particular. Great place to visit!`
           : `Really enjoyed the ${tagsPhrase} at ${cafe.name}! Prompt service and delicious items. Will visit again.`;
       } else {
         fallbackEnhanced = reviewText.trim()
@@ -154,7 +182,13 @@ export function CustomerReviewClient({
       }
 
       setReviewText(fallbackEnhanced);
-      setAiUsesLeft((prev) => Math.max(0, prev - 1));
+      setAiUsesLeft((prev) => {
+        const next = Math.max(0, prev - 1);
+        if (next === 0) {
+          setRateLimitNotice("All 3 AI enhancements used. Review is ready!");
+        }
+        return next;
+      });
     } finally {
       setIsEnhancing(false);
     }
@@ -289,6 +323,12 @@ export function CustomerReviewClient({
               {reviewText.length}/300 chars
             </span>
           </div>
+
+          {rateLimitNotice && (
+            <p className="text-xs text-amber-700 dark:text-amber-300 font-medium pt-1 animate-in fade-in">
+              ℹ️ {rateLimitNotice}
+            </p>
+          )}
         </section>
 
         {/* Step 4: Compliant Smart Routing */}
@@ -412,3 +452,4 @@ export function CustomerReviewClient({
     </main>
   );
 }
+

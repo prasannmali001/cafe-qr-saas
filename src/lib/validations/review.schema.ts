@@ -6,7 +6,7 @@ export const RandomTagsQuerySchema = z.object({
 });
 
 export const EnhanceReviewSchema = z.object({
-  sessionId: z.string().uuid(),
+  sessionId: z.string().min(1, "sessionId is required").max(100),
   cafeName: z.string().min(1).max(120),
   starRating: z.number().int().min(1).max(5),
   selectedTags: z.array(z.string().max(60)).min(1).max(5),

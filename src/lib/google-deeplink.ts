@@ -48,3 +48,4 @@ export function getPreferredRedirectUrl(
   }
   return links.webReviewUrl;
 }
+
