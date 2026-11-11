@@ -142,3 +142,4 @@ export async function recordEnhancementUsage(
 
   return Math.max(0, SESSION_MAX_ENHANCEMENTS - currentSessionUses);
 }
+
