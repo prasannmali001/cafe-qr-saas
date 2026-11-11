@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useId } from "react";
+import React, { useState, useId, useEffect } from "react";
 import Image from "next/image";
 import {
   Sparkles,
@@ -10,11 +10,15 @@ import {
   MessageSquare,
   CheckCircle2,
   ExternalLink,
+  ShieldCheck,
+  KeyRound,
+  X,
 } from "lucide-react";
 import { StarRating } from "./StarRating";
 import { TagSelector } from "./TagSelector";
 import { VoiceMicButton } from "./VoiceMicButton";
 import { CopyAndRedirectBtn } from "./CopyAndRedirectBtn";
+import { LiveRewardCoupon } from "./LiveRewardCoupon";
 import { buildGoogleDeeplinks } from "@/lib/google-deeplink";
 
 export interface CafeData {
@@ -38,6 +42,7 @@ export function CustomerReviewClient({
   staffName,
 }: CustomerReviewClientProps) {
   const generatedId = useId();
+
   // Persistent session ID for this customer visit
   const [sessionId] = useState<string>(() => {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -56,8 +61,94 @@ export function CustomerReviewClient({
   const [managerSubmitted, setManagerSubmitted] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
+  // Trap #6: 24h Cooldown Guard & Table PIN State
+  const [hasCooldown, setHasCooldown] = useState<boolean>(false);
+  const [savedCouponCode, setSavedCouponCode] = useState<string>("");
+  const [requireTablePin, setRequireTablePin] = useState<boolean>(false);
+  const [expectedPin, setExpectedPin] = useState<string>("24");
+  const [enteredPin, setEnteredPin] = useState<string>("");
+  const [pinVerified, setPinVerified] = useState<boolean>(false);
+  const [pinError, setPinError] = useState<string | null>(null);
+  const [showPinModal, setShowPinModal] = useState<boolean>(false);
+  const [pendingRouting, setPendingRouting] = useState<"GOOGLE_PUBLIC" | "INTERNAL_MANAGER" | null>(null);
+
+  // Trap #12: Live Timestamped Reward Coupon State
+  const [rewardState, setRewardState] = useState<"IDLE" | "COUNTDOWN" | "UNLOCKED">("IDLE");
+  const [countdown, setCountdown] = useState<number>(12);
+
   const isPositive = stars >= 4;
   const deeplinks = buildGoogleDeeplinks(cafe.googlePlaceId, cafe.name);
+
+  // Check 24-hour Cooldown on Initial Mount (Trap #6)
+  useEffect(() => {
+    const saved = localStorage.getItem(`cafe_review_cooldown_${cafe.id}`);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved) as { at: number; code?: string };
+        const elapsedHours = (Date.now() - parsed.at) / (1000 * 60 * 60);
+        if (elapsedHours < 24) {
+          setHasCooldown(true);
+          setSavedCouponCode(
+            parsed.code || `ROAST-PASS-${sessionId.slice(-6).toUpperCase()}`
+          );
+        }
+      } catch {
+        // Ignore parse error
+      }
+    }
+
+    // Load active security settings from API
+    async function loadSecuritySettings() {
+      try {
+        const res = await fetch("/api/v1/dashboard/settings");
+        if (res.ok) {
+          const data = (await res.json()) as {
+            requireTablePin?: boolean;
+            tablePin?: string;
+          };
+          if (data.requireTablePin !== undefined) {
+            setRequireTablePin(data.requireTablePin);
+          }
+          if (data.tablePin) {
+            setExpectedPin(data.tablePin);
+          }
+        }
+      } catch {
+        // Use default offline settings
+      }
+    }
+    void loadSecuritySettings();
+  }, [cafe.id, sessionId]);
+
+  // Trap #12: 12-Second Verification Countdown & Window Focus Listener
+  useEffect(() => {
+    if (rewardState !== "COUNTDOWN") return;
+
+    const timer = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          setRewardState("UNLOCKED");
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    // If user switches back to this tab from Google Maps app, immediately unlock coupon
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        setRewardState("UNLOCKED");
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [rewardState]);
 
   const handleToggleTag = (tag: string) => {
     setSelectedTags((prev) =>
@@ -66,7 +157,6 @@ export function CustomerReviewClient({
   };
 
   const handleAutoStitch = (stitched: string) => {
-    // Only update textarea if user hasn't heavily custom typed, or append
     setReviewText(stitched);
   };
 
@@ -93,14 +183,52 @@ export function CustomerReviewClient({
           customerContact: contactInfo || undefined,
         }),
       });
+
+      // Save 24h Cooldown in LocalStorage and Browser Cookie (Trap #6)
+      const couponCode = `ROAST-VERIFIED-${sessionId.slice(-6).toUpperCase()}`;
+      localStorage.setItem(
+        `cafe_review_cooldown_${cafe.id}`,
+        JSON.stringify({ at: Date.now(), code: couponCode })
+      );
+      document.cookie = `cafe_cooldown_${cafe.id}=true; max-age=86400; path=/; samesite=strict`;
     } catch (e: unknown) {
       console.warn("Telemetry submission fallback:", e);
+    }
+  };
+
+  // Verify PIN before proceeding (Trap #6)
+  const verifyPinAndProceed = (targetRoute: "GOOGLE_PUBLIC" | "INTERNAL_MANAGER") => {
+    if (requireTablePin && !pinVerified) {
+      setPendingRouting(targetRoute);
+      setShowPinModal(true);
+      return false;
+    }
+    return true;
+  };
+
+  const handlePinSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (enteredPin.trim() === expectedPin.trim()) {
+      setPinVerified(true);
+      setPinError(null);
+      setShowPinModal(false);
+
+      if (pendingRouting === "INTERNAL_MANAGER") {
+        void executeManagerSubmit();
+      }
+    } else {
+      setPinError(`Incorrect Table PIN. Please check the acrylic standee on your table.`);
     }
   };
 
   // 1-3 Star Manager Submit
   const handleManagerSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!verifyPinAndProceed("INTERNAL_MANAGER")) return;
+    await executeManagerSubmit();
+  };
+
+  const executeManagerSubmit = async () => {
     setIsSubmitting(true);
     await logSessionSubmission("INTERNAL_MANAGER");
     setIsSubmitting(false);
@@ -194,6 +322,38 @@ export function CustomerReviewClient({
     }
   };
 
+  const resetCooldownForTesting = () => {
+    localStorage.removeItem(`cafe_review_cooldown_${cafe.id}`);
+    setHasCooldown(false);
+    setRewardState("IDLE");
+  };
+
+  // Cooldown Guard Screen (Trap #6)
+  if (hasCooldown) {
+    return (
+      <main className="min-h-screen py-8 px-4 sm:px-6 bg-gradient-to-b from-emerald-50/50 via-white to-gray-50 dark:from-gray-900 dark:to-black flex flex-col items-center justify-center">
+        <div className="max-w-md w-full space-y-6 text-center">
+          <div className="p-4 rounded-3xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 shadow-sm space-y-2">
+            <span className="text-3xl">☕</span>
+            <h2 className="text-xl font-bold text-gray-900 dark:text-white">
+              Feedback Received Today!
+            </h2>
+            <p className="text-xs text-gray-500">
+              You’ve already shared a review for this cafe visit. Here is your active discount coupon:
+            </p>
+          </div>
+
+          <LiveRewardCoupon
+            cafeName={cafe.name}
+            rewardText={cafe.rewardText || "10% OFF on your next coffee!"}
+            verificationCode={savedCouponCode || `ROAST-PASS-ACTIVE`}
+            onReset={resetCooldownForTesting}
+          />
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main
       className={`min-h-screen py-6 px-4 sm:px-6 transition-colors duration-300 ${
@@ -236,6 +396,14 @@ export function CustomerReviewClient({
               <span>
                 Served by {staffName || `Staff member #${staffCode}`}
               </span>
+            </div>
+          )}
+
+          {/* Trap #6: Table PIN Active Security Indicator */}
+          {requireTablePin && (
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 text-[11px] font-semibold border border-blue-200 dark:border-blue-900">
+              <ShieldCheck className="w-3 h-3" />
+              <span>In-Store Table PIN Protected</span>
             </div>
           )}
         </header>
@@ -335,41 +503,80 @@ export function CustomerReviewClient({
         {isPositive ? (
           /* ================= 4-5 STARS: GOOGLE MAPS ROUTE ================= */
           <section className="space-y-4">
-            {/* Reward Coupon Preview Card */}
-            {cafe.rewardText && (
-              <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-emerald-100 dark:bg-emerald-900/50 flex items-center justify-center shrink-0">
-                  <Gift className="w-5 h-5 text-emerald-700 dark:text-emerald-300" />
+            {/* Live Reward Verification Screen (Trap #12) */}
+            {rewardState === "UNLOCKED" ? (
+              <LiveRewardCoupon
+                cafeName={cafe.name}
+                rewardText={cafe.rewardText || "10% OFF on your next coffee!"}
+                verificationCode={`ROAST-VERIFIED-${sessionId.slice(-6).toUpperCase()}`}
+                onReset={() => setRewardState("IDLE")}
+              />
+            ) : rewardState === "COUNTDOWN" ? (
+              <div className="p-6 rounded-3xl bg-amber-50 dark:bg-amber-950/30 border-2 border-amber-300 dark:border-amber-800 text-center space-y-4 animate-in fade-in">
+                <div className="w-12 h-12 rounded-full bg-amber-500 text-white flex items-center justify-center font-black text-lg mx-auto animate-bounce">
+                  {countdown}s
                 </div>
                 <div>
-                  <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-800 dark:text-emerald-300">
-                    Customer Reward
-                  </h4>
-                  <p className="text-xs sm:text-sm text-emerald-900 dark:text-emerald-200 font-medium">
-                    {cafe.rewardText}
+                  <h3 className="font-bold text-gray-900 dark:text-white text-base">
+                    Review Submitted to Google Maps!
+                  </h3>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Please paste your review in Google Maps. Generating your live counter discount pass...
                   </p>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setRewardState("UNLOCKED")}
+                  className="px-4 py-2 rounded-xl bg-amber-600 text-white text-xs font-bold"
+                >
+                  I Posted on Google (Unlock Coupon Now)
+                </button>
               </div>
+            ) : (
+              <>
+                {/* Reward Coupon Preview Card */}
+                {cafe.rewardText && (
+                  <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-emerald-100 dark:bg-emerald-900/50 flex items-center justify-center shrink-0">
+                      <Gift className="w-5 h-5 text-emerald-700 dark:text-emerald-300" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-800 dark:text-emerald-300">
+                        Customer Reward
+                      </h4>
+                      <p className="text-xs sm:text-sm text-emerald-900 dark:text-emerald-200 font-medium">
+                        {cafe.rewardText}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Synchronous Copy & Native Maps Deep-Link CTA */}
+                <CopyAndRedirectBtn
+                  reviewText={
+                    reviewText ||
+                    `Loved the experience at ${cafe.name}! Highly recommended.`
+                  }
+                  googlePlaceId={cafe.googlePlaceId}
+                  cafeName={cafe.name}
+                  redirectUrl={deeplinks.webReviewUrl}
+                  onSubmitted={() => {
+                    void logSessionSubmission("GOOGLE_PUBLIC");
+                    // Trigger Live Reward Verification Countdown (Trap #12)
+                    setRewardState("COUNTDOWN");
+                  }}
+                />
+
+                <p className="text-center text-[11px] text-gray-400 dark:text-gray-500">
+                  Tapping copies your review and opens Google Maps directly. Just tap paste!
+                </p>
+              </>
             )}
-
-            {/* Synchronous Copy & Native Maps Deep-Link CTA */}
-            <CopyAndRedirectBtn
-              reviewText={reviewText || `Loved the experience at ${cafe.name}! Highly recommended.`}
-              googlePlaceId={cafe.googlePlaceId}
-              cafeName={cafe.name}
-              redirectUrl={deeplinks.webReviewUrl}
-              onSubmitted={() => void logSessionSubmission("GOOGLE_PUBLIC")}
-            />
-
-            <p className="text-center text-[11px] text-gray-400 dark:text-gray-500">
-              Tapping copies your review and opens Google Maps directly. Just tap paste!
-            </p>
           </section>
         ) : (
           /* ================= 1-3 STARS: MANAGER INBOX + COMPLIANT GOOGLE LINK ================= */
           <section className="space-y-4">
             {managerSubmitted ? (
-              // Instant Thank You State after manager feedback submission
               <div className="p-6 rounded-3xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-center space-y-3 animate-in fade-in">
                 <CheckCircle2 className="w-12 h-12 text-amber-600 dark:text-amber-400 mx-auto" />
                 <h3 className="text-lg font-bold text-amber-950 dark:text-amber-200">
@@ -380,7 +587,6 @@ export function CustomerReviewClient({
                 </p>
               </div>
             ) : (
-              // Manager Form with Empathy Tone
               <form
                 onSubmit={handleManagerSubmit}
                 className="bg-amber-50/70 dark:bg-amber-950/20 rounded-3xl p-5 sm:p-6 border border-amber-200 dark:border-amber-900 space-y-4"
@@ -428,7 +634,7 @@ export function CustomerReviewClient({
               </form>
             )}
 
-            {/* MANDATORY Google Maps UGC Compliant Secondary Link (Section 7 Trap 4) */}
+            {/* MANDATORY Google Maps UGC Compliant Secondary Link (Section 7 Trap #4) */}
             <div className="text-center pt-2">
               <button
                 type="button"
@@ -449,7 +655,56 @@ export function CustomerReviewClient({
           Powered by Cafe QR SaaS • Frictionless Review Flow
         </footer>
       </div>
+
+      {/* Trap #6: Table PIN Verification Modal */}
+      {showPinModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white dark:bg-gray-900 rounded-3xl p-6 max-w-sm w-full border border-gray-200 dark:border-gray-800 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-gray-900 dark:text-white font-bold text-sm">
+                <KeyRound className="w-5 h-5 text-amber-600" />
+                <span>Verify Table Standee PIN</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowPinModal(false)}
+                className="p-1 rounded-lg text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              To verify you are currently dining at <strong>{cafe.name}</strong>, enter the Table PIN displayed on your table standee (default: <strong>{expectedPin}</strong>):
+            </p>
+
+            <form onSubmit={handlePinSubmit} className="space-y-3">
+              <input
+                type="text"
+                autoFocus
+                maxLength={4}
+                value={enteredPin}
+                onChange={(e) => setEnteredPin(e.target.value)}
+                placeholder="e.g. 24"
+                className="w-full text-center tracking-widest text-2xl font-mono p-3 rounded-2xl bg-gray-50 dark:bg-gray-800 border-2 border-amber-300 dark:border-amber-700 focus:outline-none focus:ring-2 focus:ring-amber-500 font-bold"
+              />
+
+              {pinError && (
+                <p className="text-xs text-red-600 dark:text-red-400 font-medium text-center">
+                  {pinError}
+                </p>
+              )}
+
+              <button
+                type="submit"
+                className="w-full py-3 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-sm shadow-md"
+              >
+                Confirm PIN & Proceed
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
-

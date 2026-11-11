@@ -9,12 +9,15 @@ import {
   Sparkles,
   ArrowUpRight,
   ExternalLink,
+  ShieldCheck,
 } from "lucide-react";
 import { DashboardMetrics } from "@/app/api/v1/dashboard/metrics/route";
 
 export default function DashboardOverviewPage() {
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [requireTablePin, setRequireTablePin] = useState<boolean>(false);
+  const [tablePin, setTablePin] = useState<string>("24");
 
   useEffect(() => {
     async function loadMetrics() {
@@ -30,8 +33,44 @@ export default function DashboardOverviewPage() {
         setLoading(false);
       }
     }
+
+    async function loadSettings() {
+      try {
+        const res = await fetch("/api/v1/dashboard/settings");
+        if (res.ok) {
+          const data = (await res.json()) as {
+            requireTablePin?: boolean;
+            tablePin?: string;
+          };
+          if (data.requireTablePin !== undefined) {
+            setRequireTablePin(data.requireTablePin);
+          }
+          if (data.tablePin) {
+            setTablePin(data.tablePin);
+          }
+        }
+      } catch {
+        // Fallback
+      }
+    }
+
     void loadMetrics();
+    void loadSettings();
   }, []);
+
+  const handleToggleSecurityPin = async () => {
+    const nextVal = !requireTablePin;
+    setRequireTablePin(nextVal);
+    try {
+      await fetch("/api/v1/dashboard/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requireTablePin: nextVal, tablePin }),
+      });
+    } catch (err: unknown) {
+      console.warn("Failed to update security settings:", err);
+    }
+  };
 
   return (
     <div className="space-y-8 animate-in fade-in duration-300">
@@ -64,6 +103,48 @@ export default function DashboardOverviewPage() {
             <ExternalLink className="w-3.5 h-3.5" />
           </a>
         </div>
+      </div>
+
+      {/* Trap #6: Anti-Spam Security Shield Banner */}
+      <div className="p-5 rounded-3xl bg-gradient-to-r from-blue-500/10 via-indigo-500/10 to-blue-500/5 border border-blue-200 dark:border-blue-900/60 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-2xl bg-blue-600 text-white flex items-center justify-center font-bold shrink-0 shadow-md shadow-blue-600/30">
+            <ShieldCheck className="w-5 h-5" />
+          </div>
+          <div>
+            <h3 className="text-sm font-bold text-gray-900 dark:text-white flex items-center gap-2">
+              <span>Competitor Photo Spam Shield (Section 7 Trap #6)</span>
+              <span
+                className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                  requireTablePin
+                    ? "bg-blue-600 text-white"
+                    : "bg-gray-200 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+                }`}
+              >
+                {requireTablePin ? "Protected (PIN Required)" : "Frictionless"}
+              </span>
+            </h3>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              {requireTablePin
+                ? `Table PIN verification is active. Guests must enter PIN '${tablePin}' from their standee before submitting.`
+                : "Direct 3-tap review flow is active. Toggle ON if experiencing competitor photo spam."}
+            </p>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={handleToggleSecurityPin}
+          className={`px-4 py-2.5 rounded-xl text-xs font-bold transition shadow-sm cursor-pointer shrink-0 ${
+            requireTablePin
+              ? "bg-gray-800 text-white hover:bg-gray-900"
+              : "bg-blue-600 text-white hover:bg-blue-700"
+          }`}
+        >
+          {requireTablePin
+            ? "Turn OFF (Frictionless Mode)"
+            : "Activate Table PIN Guard"}
+        </button>
       </div>
 
       {/* KPI Cards Grid */}
